@@ -5,6 +5,50 @@
 
 #pragma comment(lib, "Advapi32.lib")
 
+
+/*
+#define NT_SUCCESS(Status) ((NTSTATUS)(Status) >= 0)
+
+#define InitializeObjectAttributes(p, n, a, r, s) { \
+    (p)->Length = sizeof(OBJECT_ATTRIBUTES);       \
+    (p)->RootDirectory = r;                        \
+    (p)->Attributes = a;                           \
+    (p)->ObjectName = n;                           \
+    (p)->SecurityDescriptor = s;                   \
+    (p)->SecurityQualityOfService = NULL;          \
+}
+
+typedef struct _UNICODE_STRING {
+    USHORT Length;         // Length of the string in bytes (excluding null terminator)
+    USHORT MaximumLength;  // Total size of the buffer in bytes
+    PWSTR  Buffer;         // Pointer to the wide-character string
+} UNICODE_STRING, *PUNICODE_STRING;
+
+VOID RtlInitUnicodeString(
+    PUNICODE_STRING DestinationString,
+    PCWSTR SourceString
+) {
+    if (SourceString) {
+        DestinationString->Length = (USHORT)wcslen(SourceString) * sizeof(WCHAR);
+        DestinationString->MaximumLength = DestinationString->Length + sizeof(WCHAR);
+        DestinationString->Buffer = (PWSTR)SourceString;
+    } else {
+        DestinationString->Length = 0;
+        DestinationString->MaximumLength = 0;
+        DestinationString->Buffer = NULL;
+    }
+}
+
+typedef struct _OBJECT_ATTRIBUTES {
+    ULONG           Length;
+    HANDLE          RootDirectory;
+    PUNICODE_STRING ObjectName;
+    ULONG           Attributes;
+    PVOID           SecurityDescriptor;
+    PVOID           SecurityQualityOfService;
+} OBJECT_ATTRIBUTES, *POBJECT_ATTRIBUTES;
+*/
+
 VOID RtlInitUnicodeString(
     PUNICODE_STRING DestinationString,
     PCWSTR SourceString
@@ -135,6 +179,8 @@ BOOL GetSecurityDescriptor(HANDLE hObject) {
         printf("\x1b[92m[+]\x1b[0m DACL: %s\n", daclOut);
     }
 
+//ConvertStringSecurityDescriptorToSecurityDescriptor found this use later to set a descriptor?
+
     LPSTR sidstring;
     if (ConvertSidToStringSid(ownerSID, &sidstring)) {
         printf("\x1b[92m[+]\x1b[0m SID: %s\n", sidstring);
@@ -142,6 +188,10 @@ BOOL GetSecurityDescriptor(HANDLE hObject) {
       printf("error geeting SID\n");
       return FALSE;
     }
+//SE_OBJECT_TYPE sObj;
+//SECURITY_INFORMATION sInfo;
+//if (GetSecurityInfo(hObject, sObj, sInfo, &ownerSID, &oGroup,  ))
+
 
     char name[256];
     char domain[256];
@@ -165,7 +215,6 @@ BOOL GetSecurityDescriptor(HANDLE hObject) {
 //#define OBJ_CASE_INSENSITIVE 0x00000040
 
 int wmain(int argc, wchar_t *argv[]) {
-  
 HANDLE hDir;
 UNICODE_STRING dirName;
 OBJECT_ATTRIBUTES oa;
@@ -211,9 +260,138 @@ if (NtQueryDirectoryObject) {
             for (int i=0; i < retLen; i++) {
             OBJDIR_INFORMATION* entry = (OBJDIR_INFORMATION*)buffer + offset;
 
-            if (entry->Name.Buffer == 0) break;
+            if (wcscmp(entry[i].Name.Buffer, L"") == 0) break;
 
-            wprintf(L"%s\n", entry[i].Name.Buffer);
+            wprintf(L"%ws\n", entry[i].Name.Buffer);
+
+            if (argv[2]) {
+
+            if (wcscmp(entry[i].Name.Buffer, argv[2]) == 0) {
+
+            printf("\x1b[2J\x1b[H");
+
+            printf("Starting walker-object-ranger");
+            for (int i=0; i < 3; i++) {
+                printf(".");
+                Sleep(300);
+            }
+            printf("\n");
+
+            
+            while (1) {
+                
+                wprintf(L"walker-object-ranger@%ws >> ", entry[i].Name.Buffer);
+
+                wchar_t lineBuff[100];
+                fgetws(lineBuff, 99, stdin);
+                lineBuff[wcscspn(lineBuff, L"\n")] = L'\0';
+
+                if (wcscmp(lineBuff, L"walk") == 0) {
+
+                    wchar_t pathBuff[150];
+                    puts("Directory path??");
+                    fgetws(pathBuff, sizeof(pathBuff) - 1, stdin);
+
+                    pathBuff[wcscspn(pathBuff, L"\n")] = L'\0';
+
+                    wchar_t findBuff[1024];
+                    swprintf(findBuff, sizeof(findBuff), L"\\\\?\\GLOBALROOT\\Device\\%ws\\%ws\\*", entry[i].Name.Buffer, pathBuff);
+
+                    //printf("%ws\n", findBuff);
+                    WIN32_FIND_DATAW findData;
+
+                    HANDLE hFind = FindFirstFileW(findBuff, &findData);
+
+                    if (hFind == INVALID_HANDLE_VALUE) {
+                    printf("FindFirstFile failed. Error: %lu\n", GetLastError());
+                    } else {
+                
+                    wprintf(L"[+] %s\n", findData.cFileName);
+
+                    while (FindNextFileW(hFind, &findData)) {
+
+                        if (wcscmp(findData.cFileName, ".") == 0 || wcscmp(findData.cFileName, "..") == 0) {
+                        continue;
+                        } else {
+                            wprintf(L"[+] %s\n", findData.cFileName);
+                        }
+
+                    }
+
+                }
+
+            }
+
+                if (wcscmp(lineBuff, L"list") == 0) {
+
+                    wchar_t findBuff[1024];
+                    swprintf(findBuff, sizeof(findBuff), L"\\\\?\\GLOBALROOT\\Device\\%ws\\*", entry[i].Name.Buffer);
+
+                    WIN32_FIND_DATAW findData;
+
+                    HANDLE hFind = FindFirstFileW(findBuff, &findData);
+
+                    if (hFind == INVALID_HANDLE_VALUE) {
+                    printf("FindFirstFile failed. Error: %lu\n", GetLastError());
+                    } else {
+                
+                    wprintf(L"%s\n", findData.cFileName);
+
+                    while (FindNextFileW(hFind, &findData)) {
+                        wprintf(L"%s\n", findData.cFileName);
+                    }
+
+                }
+
+            }
+
+            else if ((wcscmp(lineBuff, L"read") == 0)) {
+
+            HANDLE hFile;
+            DWORD bytesRead;
+            char buffer[1024];
+
+            wchar_t pathBuff[150];
+            puts("path?");
+            fgetws(pathBuff, sizeof(pathBuff) - 1, stdin);
+
+            pathBuff[wcscspn(pathBuff, L"\n")] = L'\0';
+
+            wchar_t finalBuff[1024];
+            swprintf(finalBuff, sizeof(finalBuff), L"\\\\?\\GLOBALROOT\\Device\\%ws\\%ws", entry[i].Name.Buffer, pathBuff);
+
+            hFile = CreateFileW(
+             finalBuff,
+             GENERIC_READ,
+             FILE_SHARE_READ,
+             NULL,
+             OPEN_EXISTING,
+             FILE_ATTRIBUTE_NORMAL,
+             NULL
+             );
+
+            if (hFile == INVALID_HANDLE_VALUE) {
+               printf("error %lu\n", GetLastError());
+               return 1;
+            }
+
+             if (!ReadFile(hFile, buffer, sizeof(buffer) - 1, &bytesRead, NULL)) {
+                printf("Error reading\n");
+                return 1;
+            }
+
+            printf("%s\n", buffer);
+
+        }
+
+         else if ((wcscmp(lineBuff, L"exit") == 0)) { 
+            puts("see ya!");
+            return 0;
+         }
+
+        }
+        }
+}
 
             if (wcscmp(argv[1], L"\\Global??") == 0) {
             
