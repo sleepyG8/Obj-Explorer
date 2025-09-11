@@ -104,6 +104,23 @@ typedef struct _OBJDIR_INFORMATION {
     BYTE Padding[8];           // Optional alignment padding
 } OBJDIR_INFORMATION, *POBJDIR_INFORMATION;
 
+typedef enum _SECTION_INHERIT {
+    ViewShare = 1,
+    ViewUnmap = 2
+} SECTION_INHERIT;
+
+typedef NTSTATUS (NTAPI *NtMapViewOfSection_t)(
+    HANDLE SectionHandle,
+    HANDLE ProcessHandle,
+    PVOID *BaseAddress,
+    ULONG_PTR ZeroBits,
+    SIZE_T CommitSize,
+    PLARGE_INTEGER SectionOffset,
+    PSIZE_T ViewSize,
+    SECTION_INHERIT InheritDisposition,
+    ULONG AllocationType,
+    ULONG PageProtection
+);
 
 BOOL GetSecurityDescriptor(HANDLE hObject) {
     
@@ -214,19 +231,43 @@ BOOL GetSecurityDescriptor(HANDLE hObject) {
 
 //#define OBJ_CASE_INSENSITIVE 0x00000040
 
+// Setup
+HANDLE hNtdll;
+NtOpenSection_t NtOpenSection;
+NtOpenSymbolicLinkObject_t NtOpenSymbolicLinkObject;
+NtQuerySymbolicLinkObject_t NtQuerySymbolicLinkObject;
+PFN_NtOpenDirectoryObject NtOpenDirectoryObject;
+BOOL setup() {
+
+    hNtdll = GetModuleHandle("ntdll.dll");
+
+    NtOpenSection = (NtOpenSection_t)GetProcAddress(hNtdll, "NtOpenSection");
+    if (!NtOpenSection) return 1;
+
+    NtOpenSymbolicLinkObject = (NtOpenSymbolicLinkObject_t)GetProcAddress(hNtdll, "NtOpenSymbolicLinkObject");
+    if (!NtOpenSymbolicLinkObject) return 1;
+
+    NtQuerySymbolicLinkObject = (NtQuerySymbolicLinkObject_t)GetProcAddress(hNtdll, "NtQuerySymbolicLinkObject");
+    if (!NtQuerySymbolicLinkObject) return 1;
+
+    NtOpenDirectoryObject = (PFN_NtOpenDirectoryObject)GetProcAddress(hNtdll, "NtOpenDirectoryObject");
+    if (!NtOpenDirectoryObject) return 1;
+
+    return 0;
+}
+
 int wmain(int argc, wchar_t *argv[]) {
+
 HANDLE hDir;
 UNICODE_STRING dirName;
 OBJECT_ATTRIBUTES oa;
 ULONG ctx = 0, retLen = 0;
 BYTE buffer[0x2000];
 
+setup();
+
 RtlInitUnicodeString(&dirName, argv[1]);
 InitializeObjectAttributes(&oa, &dirName, OBJ_CASE_INSENSITIVE, NULL, NULL);
-
-HANDLE hNtdll = GetModuleHandle("ntdll.dll");
-
-PFN_NtOpenDirectoryObject NtOpenDirectoryObject = (PFN_NtOpenDirectoryObject)GetProcAddress(hNtdll, "NtOpenDirectoryObject");
 
 NTSTATUS status = NtOpenDirectoryObject(&hDir, 0x0001, &oa);
 
@@ -244,15 +285,6 @@ if (NtQueryDirectoryObject) {
             &retLen
         );
         if (NT_SUCCESS(status)) {
-
-            NtOpenSection_t NtOpenSection = (NtOpenSection_t)GetProcAddress(hNtdll, "NtOpenSection");
-            if (!NtOpenSection) return 1;
-
-            NtOpenSymbolicLinkObject_t NtOpenSymbolicLinkObject = (NtOpenSymbolicLinkObject_t)GetProcAddress(hNtdll, "NtOpenSymbolicLinkObject");
-            if (!NtOpenSymbolicLinkObject) return 1;
-
-            NtQuerySymbolicLinkObject_t NtQuerySymbolicLinkObject = (NtQuerySymbolicLinkObject_t)GetProcAddress(hNtdll, "NtQuerySymbolicLinkObject");
-            if (!NtQuerySymbolicLinkObject) return 1;
 
             int offset = 0;
             UNICODE_STRING target;
@@ -313,7 +345,13 @@ if (NtQueryDirectoryObject) {
                         if (wcscmp(findData.cFileName, ".") == 0 || wcscmp(findData.cFileName, "..") == 0) {
                         continue;
                         } else {
-                            wprintf(L"[+] %s\n", findData.cFileName);
+                           ULONGLONG size = ((ULONGLONG)findData.nFileSizeHigh << 32) | findData.nFileSizeLow;
+
+                            if (size == 0) {
+                            wprintf(L"[+] %s - [Directory]\n", findData.cFileName);
+                            } else {
+                             wprintf(L"[+] %s - [%lu]\n", findData.cFileName, size);
+                            }
                         }
 
                     }
@@ -333,12 +371,19 @@ if (NtQueryDirectoryObject) {
 
                     if (hFind == INVALID_HANDLE_VALUE) {
                     printf("FindFirstFile failed. Error: %lu\n", GetLastError());
+                    return 0;
                     } else {
                 
                     wprintf(L"%s\n", findData.cFileName);
 
                     while (FindNextFileW(hFind, &findData)) {
-                        wprintf(L"%s\n", findData.cFileName);
+                            ULONGLONG size = ((ULONGLONG)findData.nFileSizeHigh << 32) | findData.nFileSizeLow;
+
+                            if (size == 0) {
+                            wprintf(L"[+] %s - [Directory]\n", findData.cFileName);
+                            } else {
+                             wprintf(L"[+] %s - [%lu]\n", findData.cFileName, size);
+                            }
                     }
 
                 }
@@ -349,7 +394,6 @@ if (NtQueryDirectoryObject) {
 
             HANDLE hFile;
             DWORD bytesRead;
-            char buffer[1024];
 
             wchar_t pathBuff[150];
             puts("path?");
@@ -370,15 +414,26 @@ if (NtQueryDirectoryObject) {
              NULL
              );
 
+             WIN32_FILE_ATTRIBUTE_DATA fad;
+             ULONGLONG size = 0;
+            if (GetFileAttributesExW(finalBuff, GetFileExInfoStandard, &fad)) {
+              size = ((ULONGLONG)fad.nFileSizeHigh << 32) | fad.nFileSizeLow;
+            }
+
+            printf("%lu\n", size);
+            char* buffer = malloc(size);
+
             if (hFile == INVALID_HANDLE_VALUE) {
                printf("error %lu\n", GetLastError());
                return 1;
             }
 
-             if (!ReadFile(hFile, buffer, sizeof(buffer) - 1, &bytesRead, NULL)) {
+             if (!ReadFile(hFile, buffer, size, &bytesRead, NULL)) {
                 printf("Error reading\n");
                 return 1;
             }
+
+            buffer[size] = '\0';
 
             printf("%s\n", buffer);
 
@@ -427,6 +482,7 @@ if (NtQueryDirectoryObject) {
                 
 
             }
+            
 
             if (offset % 2) { 
             puts("++++++++++++++++++++++++++++++++\n");
@@ -434,9 +490,51 @@ if (NtQueryDirectoryObject) {
 
             offset++;
             }
-        }
+        } 
+        
+        else if (wcscmp(argv[1], L"-s") == 0) {
+                
+                UNICODE_STRING sectionName;
+                OBJECT_ATTRIBUTES objAttr;
+                HANDLE hSection;
+
+                wchar_t fullPath[256];
+                swprintf(fullPath, 256, L"\\\\?\\GLOBALROOT\\BaseNamedObjects\\%ws", argv[2]);
+                RtlInitUnicodeString(&sectionName, fullPath);
+                InitializeObjectAttributes(&objAttr, &sectionName, OBJ_CASE_INSENSITIVE, NULL, NULL);
+
+                wprintf(L"%ws\n", fullPath);
+
+                NTSTATUS status1 = NtOpenSection(&hSection, GENERIC_READ, &objAttr);
+                
+                if (!NT_SUCCESS(status1)) {
+                printf("Error %lu\n", status1);
+                return 1;
+                }
+
+
+                NtMapViewOfSection_t NtMapViewOfSection = (NtMapViewOfSection_t)GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtMapViewOfSection");
+
+                BYTE* baseAddress2 = NULL;
+                SIZE_T viewSize2 = 0;
+               status1 = NtMapViewOfSection(hSection, GetCurrentProcess(), &baseAddress2, 0, 0, NULL, &viewSize2, ViewUnmap, 0, PAGE_READONLY);
+
+               if (!NT_SUCCESS(status1)) {
+                printf("Error 2 %lu\n", status1);
+                return 1;
+            }
+                for (int i=0; i < 10; i++) {
+                    printf("%02X ", baseAddress2[i]);
+                }
+                
     }
 
-    printf("\n");
+    else if (wcscmp(argv[1], L"help") == 0) {
+        puts("[+] [Directory] ex: \\KnownDlls - Read object directory\n[+] [Directory] [shadow copy] - Read HarddiskVolumeShadowCopy\n[+] [-s] [Section] - Read shared section from \\BaseNamedObjects\n");
+    }
+
+    //printf("\n");
     return 0;
+}
+
 }
