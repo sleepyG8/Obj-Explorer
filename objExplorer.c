@@ -122,6 +122,13 @@ typedef NTSTATUS (NTAPI *NtMapViewOfSection_t)(
     ULONG PageProtection
 );
 
+typedef NTSTATUS (NTAPI *NtOpenEvent_t)(
+    PHANDLE            EventHandle,
+    ACCESS_MASK        DesiredAccess,
+    POBJECT_ATTRIBUTES ObjectAttributes
+);
+
+
 BOOL GetSecurityDescriptor(HANDLE hObject) {
     
     HMODULE hAdvapi32 = LoadLibrary("Advapi32.dll");
@@ -231,12 +238,45 @@ BOOL GetSecurityDescriptor(HANDLE hObject) {
 
 //#define OBJ_CASE_INSENSITIVE 0x00000040
 
+void PrintObjectAttributes(POBJECT_ATTRIBUTES objAttr) {
+    printf("OBJECT_ATTRIBUTES Dump:\n");
+    printf("  Length: %lu\n", objAttr->Length);
+    printf("  RootDirectory: 0x%p\n", objAttr->RootDirectory);
+
+    if (objAttr->ObjectName) {
+        printf("  ObjectName: Length=%hu, MaxLength=%hu, Buffer=%ws\n",
+               objAttr->ObjectName->Length,
+               objAttr->ObjectName->MaximumLength,
+               objAttr->ObjectName->Buffer);
+    } else {
+        printf("  ObjectName: (null)\n");
+    }
+
+    printf("  Attributes: 0x%08lx\n", objAttr->Attributes);
+
+    if (objAttr->SecurityDescriptor) {
+        printf("  SecurityDescriptor: 0x%p\n", objAttr->SecurityDescriptor);
+        // You can use GetSecurityDescriptorOwner or similar to extract more details
+    } else {
+        printf("  SecurityDescriptor: (null)\n");
+    }
+
+    if (objAttr->SecurityQualityOfService) {
+        printf("  SecurityQualityOfService: 0x%p\n", objAttr->SecurityQualityOfService);
+        // Optionally print fields inside SECURITY_QUALITY_OF_SERVICE
+    } else {
+        printf("  SecurityQualityOfService: (null)\n");
+    }
+}
+
 // Setup
 HANDLE hNtdll;
 NtOpenSection_t NtOpenSection;
 NtOpenSymbolicLinkObject_t NtOpenSymbolicLinkObject;
 NtQuerySymbolicLinkObject_t NtQuerySymbolicLinkObject;
 PFN_NtOpenDirectoryObject NtOpenDirectoryObject;
+NtOpenEvent_t NtOpenEvent;
+
 BOOL setup() {
 
     hNtdll = GetModuleHandle("ntdll.dll");
@@ -253,6 +293,9 @@ BOOL setup() {
     NtOpenDirectoryObject = (PFN_NtOpenDirectoryObject)GetProcAddress(hNtdll, "NtOpenDirectoryObject");
     if (!NtOpenDirectoryObject) return 1;
 
+    NtOpenEvent = (NtOpenEvent_t)GetProcAddress(hNtdll, "NtOpenEvent");
+    if (!NtOpenEvent) return 1;
+
     return 0;
 }
 
@@ -262,9 +305,9 @@ HANDLE hDir;
 UNICODE_STRING dirName;
 OBJECT_ATTRIBUTES oa;
 ULONG ctx = 0, retLen = 0;
-BYTE buffer[0x2000];
+BYTE buffer[0x15000];
 
-setup();
+    setup();
 
 RtlInitUnicodeString(&dirName, argv[1]);
 InitializeObjectAttributes(&oa, &dirName, OBJ_CASE_INSENSITIVE, NULL, NULL);
@@ -289,6 +332,8 @@ if (NtQueryDirectoryObject) {
             int offset = 0;
             UNICODE_STRING target;
 
+            printf("%lu\n", retLen);
+
             for (int i=0; i < retLen; i++) {
             OBJDIR_INFORMATION* entry = (OBJDIR_INFORMATION*)buffer + offset;
 
@@ -296,6 +341,7 @@ if (NtQueryDirectoryObject) {
 
             wprintf(L"%ws\n", entry[i].Name.Buffer);
 
+            // File walker
             if (argv[2]) {
 
             if (wcscmp(entry[i].Name.Buffer, argv[2]) == 0) {
@@ -439,6 +485,84 @@ if (NtQueryDirectoryObject) {
 
         }
 
+        else if(wcscmp(lineBuff, L"copy") == 0) {
+
+            HANDLE hFile;
+            DWORD bytesRead;
+
+            wchar_t pathBuff[150];
+            puts("path?");
+            fgetws(pathBuff, sizeof(pathBuff) - 1, stdin);
+
+            pathBuff[wcscspn(pathBuff, L"\n")] = L'\0';
+
+            wchar_t finalBuff[1024];
+            swprintf(finalBuff, sizeof(finalBuff), L"\\\\?\\GLOBALROOT\\Device\\%ws\\%ws", entry[i].Name.Buffer, pathBuff);
+
+            hFile = CreateFileW(
+             finalBuff,
+             GENERIC_READ,
+             FILE_SHARE_READ,
+             NULL,
+             OPEN_EXISTING,
+             FILE_ATTRIBUTE_NORMAL,
+             NULL
+             );
+
+             WIN32_FILE_ATTRIBUTE_DATA fad;
+             ULONGLONG size = 0;
+            if (GetFileAttributesExW(finalBuff, GetFileExInfoStandard, &fad)) {
+              size = ((ULONGLONG)fad.nFileSizeHigh << 32) | fad.nFileSizeLow;
+            }
+
+            printf("%lu\n", size);
+            char* buffer = malloc(size);
+
+            if (hFile == INVALID_HANDLE_VALUE) {
+               printf("error %lu\n", GetLastError());
+               return 1;
+            }
+
+             if (!ReadFile(hFile, buffer, size, &bytesRead, NULL)) {
+                printf("Error reading\n");
+                return 1;
+            }
+
+            buffer[size] = '\0';
+
+            // writing
+
+            wchar_t outBuff[150];
+            puts("outfile name??");
+            fgetws(outBuff, sizeof(outBuff) - 1, stdin);
+
+            outBuff[wcscspn(outBuff, L"\n")] = L'\0';
+
+            
+            HANDLE outFile = CreateFileW(
+             outBuff,
+             GENERIC_WRITE,
+             FILE_SHARE_READ,
+             NULL,
+             CREATE_ALWAYS,
+             FILE_ATTRIBUTE_NORMAL,
+             NULL
+             );
+
+             if (!outFile) {
+                printf("Error %lu\n", GetLastError());
+                return 0;
+             }
+
+            if (!WriteFile(outFile, buffer, size, NULL, NULL)) {
+                puts("Error");
+                return 1;
+            }
+
+            //return 0;
+
+        }
+
          else if ((wcscmp(lineBuff, L"exit") == 0)) { 
             puts("see ya!");
             return 0;
@@ -499,7 +623,7 @@ if (NtQueryDirectoryObject) {
                 HANDLE hSection;
 
                 wchar_t fullPath[256];
-                swprintf(fullPath, 256, L"\\\\?\\GLOBALROOT\\BaseNamedObjects\\%ws", argv[2]);
+                swprintf(fullPath, 256, L"\\\\?\\GLOBALROOT\\%ws", argv[2]);
                 RtlInitUnicodeString(&sectionName, fullPath);
                 InitializeObjectAttributes(&objAttr, &sectionName, OBJ_CASE_INSENSITIVE, NULL, NULL);
 
@@ -527,6 +651,28 @@ if (NtQueryDirectoryObject) {
                     printf("%02X ", baseAddress2[i]);
                 }
                 
+    }
+
+    else if (wcscmp(argv[1], L"event") == 0) {
+
+                UNICODE_STRING sectionName;
+                OBJECT_ATTRIBUTES objAttr;
+                HANDLE hEvent;
+
+                wchar_t fullPath[256];
+                swprintf(fullPath, 256, L"\\\\?\\GLOBALROOT\\%ws", argv[2]);
+                RtlInitUnicodeString(&sectionName, fullPath);
+                InitializeObjectAttributes(&objAttr, &sectionName, OBJ_CASE_INSENSITIVE, NULL, NULL);
+
+                //wprintf(L"%ws\n", fullPath);
+
+                NTSTATUS status = NtOpenEvent(&hEvent, 0x0001, &objAttr);
+
+                printf("EVENT: %ws - Valid\n\n", objAttr.ObjectName->Buffer);
+
+                PrintObjectAttributes(&objAttr);
+    
+                return 0;
     }
 
     else if (wcscmp(argv[1], L"help") == 0) {
